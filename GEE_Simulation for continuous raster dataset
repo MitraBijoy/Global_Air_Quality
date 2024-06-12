@@ -1,7 +1,7 @@
 // Define years and initial images
 var train_1 = 2001;
 var train_2 = 2022;
-var pred_year = 2280;
+var pred_year = 2050;
 
 // Load your satellite images (assuming these have NDVI bands)
 var image1 = ee.Image('projects/ee-bijoymitra111/assets/Sim_Test/NDVI_SA_2001'); 
