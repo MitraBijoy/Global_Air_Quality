@@ -1,7 +1,7 @@
 // Define years and initial images
 var train_1 = 2001;
-var train_2 = 2021;
-var pred_year = 2080;
+var train_2 = 2022;
+var pred_year = 2280;
 
 // Load your satellite images (assuming these have NDVI bands)
 var image1 = ee.Image('projects/ee-bijoymitra111/assets/Sim_Test/NDVI_SA_2001'); 
@@ -112,16 +112,19 @@ var predictedRate = variablesPredict.classify(regressor);
 var years_to_predict = pred_year - train_2;
 var predictedRaster_adjusted = image2.add(predictedRate.multiply(years_to_predict));
 
-// Add predicted Raster to the map with appropriate visualization parameters
-Map.addLayer(predictedRaster_adjusted, {
+// Clamp the predicted NDVI values to ensure they remain between -1 and 1
+var clampedRaster = predictedRaster_adjusted.clamp(-1, 1);
+
+// Add clamped predicted Raster to the map with appropriate visualization parameters
+Map.addLayer(clampedRaster, {
   min: -1,
   max: 1,
   palette: ['blue', 'white', 'green']
-}, 'Predicted Raster for ' + pred_year);
+}, 'Predicted NDVI for ' + pred_year);
 
 // Define export parameters
 var exportParams = {
-  image: predictedRaster_adjusted,
+  image: clampedRaster,
   folder: 'XGBoost_Sim',
   description: 'Predicted_NDVI_' + pred_year,
   fileNamePrefix: 'NDVI_Prediction_' + pred_year,
