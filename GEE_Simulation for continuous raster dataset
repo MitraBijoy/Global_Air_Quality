@@ -1,0 +1,138 @@
+// Define years and initial images
+var train_1 = 2001;
+var train_2 = 2021;
+var pred_year = 2080;
+
+// Load your satellite images (assuming these have NDVI bands)
+var image1 = ee.Image('projects/ee-bijoymitra111/assets/Sim_Test/NDVI_SA_2001'); 
+var image2 = ee.Image('projects/ee-bijoymitra111/assets/Sim_Test/NDVI_SA_22'); 
+
+// Add layers for image1 and image2 to the map with appropriate visualization parameters
+Map.addLayer(image1, {min: -1, max: 1, palette: ['blue', 'white', 'green']}, 'Raster Layer 1');
+Map.addLayer(image2, {min: -1, max: 1, palette: ['blue', 'white', 'green']}, 'Raster Layer 2');
+
+// Define region of interest (ROI)
+var roi = image1.geometry().intersection(image2.geometry());
+Map.centerObject(roi, 2);
+
+// Define elevation data from SRTM
+var srtm = ee.Image('USGS/SRTMGL1_003');
+
+// Calculate the rate of Raster change between the two years
+var years_diff = train_2 - train_1;
+var ndvi_diff = image2.subtract(image1).rename('Raster_diff');
+var ndvi_rate = ndvi_diff.divide(years_diff).rename('Raster_rate');
+
+// Prepare images with variables for regression
+var variablesTrain = ee.Image.cat([
+  image1.rename('Raster_start'),
+  srtm.clip(roi).rename('elevation'),
+  ee.Image.constant(train_1).rename('year'),
+  ndvi_rate // Including the rate of change as a variable
+]).float();
+
+var variablesPredict = ee.Image.cat([
+  image2.rename('Raster_start'),
+  srtm.clip(roi).rename('elevation'),
+  ee.Image.constant(train_2).rename('year')
+]).float();
+
+// Sampling points for training and validation
+var sample = variablesTrain.sample({
+  region: roi,
+  scale: 500, // Adjust this based on the resolution of your images
+  numPixels: 10000, // Number of samples, adjust as needed
+  geometries: true
+}).randomColumn();
+
+// Split sample into training and validation sets
+var trainingSample = sample.filter(ee.Filter.lt('random', 0.7));
+var validationSample = sample.filter(ee.Filter.gte('random', 0.7));
+
+// Print number of training and validation points
+print('Number of training points:', trainingSample.size());
+print('Number of validation points:', validationSample.size());
+
+// Define the regression model with Gradient Boosting
+var regressor = ee.Classifier.smileGradientTreeBoost({
+  numberOfTrees: 1000,
+  shrinkage: 0.01,
+  samplingRate: 0.8,
+  maxNodes: 50,
+  loss: 'LeastSquares'
+}).setOutputMode('REGRESSION');
+
+// Train the model on the training data
+regressor = regressor.train({
+  features: trainingSample,
+  classProperty: 'Raster_rate',
+  inputProperties: ['Raster_start', 'elevation', 'year']
+});
+
+// Predict Raster rate for the validation sample
+var validationPrediction = validationSample.classify(regressor);
+
+// Calculate actual and predicted Raster for validation sample
+var validationWithActual = validationSample.map(function (point) {
+  var predicted = validationPrediction.filter(ee.Filter.eq('system:index', point.get('system:index'))).first();
+  var actualRaster = ee.Number(point.get('Raster_start')).add(ee.Number(point.get('Raster_rate')).multiply(years_diff));
+  var predictedRate = ee.Number(predicted.get('classification'));
+  var predictedRaster = ee.Number(point.get('Raster_start')).add(predictedRate.multiply(years_diff));
+  var error = actualRaster.subtract(predictedRaster).pow(2);
+  var absError = actualRaster.subtract(predictedRaster).abs();
+  var percError = absError.divide(actualRaster).multiply(100);
+  return point.set('actualRaster', actualRaster).set('predictedRaster', predictedRaster).set('error', error).set('absError', absError).set('percError', percError);
+});
+
+// Check if the columns exist in the validation data
+print(validationWithActual.first());
+
+// Calculate RMSE and MAPE
+var rmse = ee.Number(validationWithActual.reduceColumns(ee.Reducer.mean(), ['error']).get('mean')).sqrt();
+print('Validation RMSE:', rmse);
+
+var mape = validationWithActual.reduceColumns(ee.Reducer.mean(), ['percError']).get('mean');
+print('Validation MAPE:', mape);
+
+var chartValidation = ui.Chart.feature.byFeature(validationWithActual, 'actualRaster', 'predictedRaster')
+  .setChartType('ScatterChart')
+  .setOptions({
+    title: 'Validation Data Scatter Plot',
+    hAxis: {title: 'Actual Raster'},
+    vAxis: {title: 'Predicted Raster'},
+    pointSize: 2
+  });
+
+print(chartValidation);
+
+// Predict Raster rate for the prediction year
+var predictedRate = variablesPredict.classify(regressor);
+
+// Adjust the predicted Raster by extrapolating with the rate of change
+var years_to_predict = pred_year - train_2;
+var predictedRaster_adjusted = image2.add(predictedRate.multiply(years_to_predict));
+
+// Add predicted Raster to the map with appropriate visualization parameters
+Map.addLayer(predictedRaster_adjusted, {
+  min: -1,
+  max: 1,
+  palette: ['blue', 'white', 'green']
+}, 'Predicted Raster for ' + pred_year);
+
+// Define export parameters
+var exportParams = {
+  image: predictedRaster_adjusted,
+  folder: 'XGBoost_Sim',
+  description: 'Predicted_NDVI_' + pred_year,
+  fileNamePrefix: 'NDVI_Prediction_' + pred_year,
+  scale: 500,
+  region: roi,
+  fileFormat: 'GeoTIFF',
+  maxPixels: 1e13
+};
+
+// Start the export to Google Drive
+Export.image.toDrive(exportParams);
+
+// Optionally, print results to the console
+print('Exporting predicted Raster image to Drive for year ' + pred_year + '...');
